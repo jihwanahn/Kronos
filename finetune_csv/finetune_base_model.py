@@ -16,6 +16,12 @@ from logging.handlers import RotatingFileHandler
 import datetime
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
+from tqdm import tqdm
+try:
+    from torch.utils.tensorboard import SummaryWriter
+    _HAS_TB = True
+except ImportError:
+    _HAS_TB = False
 
 sys.path.append('../')
 from model import Kronos, KronosTokenizer, KronosPredictor
@@ -265,20 +271,32 @@ def train_model(model, tokenizer, device, config, save_dir, logger):
 
     best_val_loss = float('inf')
     batch_idx_global = 0
-    
+
+    tb_writer = None
+    if _HAS_TB and rank == 0:
+        tb_dir = os.path.join(save_dir, "tb")
+        os.makedirs(tb_dir, exist_ok=True)
+        tb_writer = SummaryWriter(log_dir=tb_dir)
+        print(f"[tensorboard] logging to {tb_dir}")
+
     for epoch in range(config.basemodel_epochs):
         epoch_start_time = time.time()
         model.train()
-        
+
         train_dataset.set_epoch_seed(epoch * 10000)
         val_dataset.set_epoch_seed(0)
         if train_sampler is not None:
             train_sampler.set_epoch(epoch)
-        
+
         epoch_train_loss = 0.0
         train_batches = 0
-        
-        for batch_idx, (batch_x, batch_x_stamp) in enumerate(train_loader):
+
+        iterator = train_loader
+        if rank == 0:
+            iterator = tqdm(train_loader,
+                            desc=f"base ep{epoch+1}/{config.basemodel_epochs}",
+                            dynamic_ncols=True, leave=False)
+        for batch_idx, (batch_x, batch_x_stamp) in enumerate(iterator):
             batch_x = batch_x.to(device, non_blocking=True)
             batch_x_stamp = batch_x_stamp.to(device, non_blocking=True)
             
@@ -300,14 +318,24 @@ def train_model(model, tokenizer, device, config, save_dir, logger):
             epoch_train_loss += loss.item()
             train_batches += 1
             
+            if rank == 0 and hasattr(iterator, "set_postfix"):
+                iterator.set_postfix(loss=f"{loss.item():.4f}",
+                                     s1=f"{s1_loss.item():.4f}",
+                                     s2=f"{s2_loss.item():.4f}",
+                                     lr=f"{optimizer.param_groups[0]['lr']:.2e}")
+
+            if tb_writer is not None and (batch_idx_global + 1) % max(1, config.log_interval // 4) == 0:
+                tb_writer.add_scalar("train/loss", loss.item(), batch_idx_global)
+                tb_writer.add_scalar("train/s1_loss", s1_loss.item(), batch_idx_global)
+                tb_writer.add_scalar("train/s2_loss", s2_loss.item(), batch_idx_global)
+                tb_writer.add_scalar("train/lr", optimizer.param_groups[0]["lr"], batch_idx_global)
+
             if (batch_idx_global + 1) % config.log_interval == 0:
                 lr = optimizer.param_groups[0]['lr']
                 log_msg = (f"[Epoch {epoch+1}/{config.basemodel_epochs}, Step {batch_idx+1}/{len(train_loader)}] "
                           f"LR: {lr:.6f}, Loss: {loss.item():.4f}")
                 logger.info(log_msg)
-                if rank == 0:
-                    print(log_msg)
-            
+
             batch_idx_global += 1
         
         model.eval()
@@ -351,6 +379,11 @@ def train_model(model, tokenizer, device, config, save_dir, logger):
         if rank == 0:
             print(epoch_summary)
         
+        if tb_writer is not None:
+            tb_writer.add_scalar("val/loss", avg_val_loss, epoch + 1)
+            tb_writer.add_scalar("val/train_loss", avg_train_loss, epoch + 1)
+            tb_writer.add_scalar("val/epoch_time_sec", epoch_time, epoch + 1)
+
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             if rank == 0:
@@ -360,7 +393,9 @@ def train_model(model, tokenizer, device, config, save_dir, logger):
                 save_msg = f"Best model saved to: {model_save_path} (validation loss: {best_val_loss:.4f})"
                 logger.info(save_msg)
                 print(save_msg)
-    
+
+    if tb_writer is not None:
+        tb_writer.close()
     return best_val_loss
 
 

@@ -1,0 +1,62 @@
+# KRX full-universe fine-tuning of Kronos-base
+
+data:
+  # New key specific to KRX multi-ticker dataset — directory of per-ticker CSVs
+  data_dir: "D:/01_Career/Kronos/examples/krx_forecast/data"
+  # Legacy key (unused by KRX pipeline, kept so CustomFinetuneConfig doesn't break)
+  data_path: "D:/01_Career/Kronos/examples/krx_forecast/data"
+  lookback_window: 512
+  predict_window: 12        # shorter than default 48 → more windows per ticker
+  max_context: 512
+  clip: 5.0
+  # Ticker-level split (10% of tickers held out for validation)
+  ticker_val_ratio: 0.1
+  reserve_tail: 60          # strip the 60-bar backtest window from training
+  # Legacy ratios — retained for config compatibility, ignored by KRX dataset
+  train_ratio: 0.9
+  val_ratio: 0.1
+  test_ratio: 0.0
+
+training:
+  tokenizer_epochs: 30
+  basemodel_epochs: 20
+  batch_size: 32
+  log_interval: 200
+  num_workers: 4
+  seed: 42
+
+  tokenizer_learning_rate: 0.0002
+  predictor_learning_rate: 0.00004   # vendor Qlib daily-bar default (finetune/config.py)
+
+  adam_beta1: 0.9
+  adam_beta2: 0.95
+  adam_weight_decay: 0.1
+
+  accumulation_steps: 1
+
+model_paths:
+  pretrained_tokenizer: "NeoQuasar/Kronos-Tokenizer-base"
+  pretrained_predictor: "NeoQuasar/Kronos-base"
+
+  exp_name: "krx_base_full"
+  base_path: "D:/01_Career/Kronos/finetune_csv/finetuned"
+
+  base_save_path: ""        # auto: {base_path}/{exp_name}
+  finetuned_tokenizer: ""   # auto: {base_path}/{exp_name}/tokenizer/best_model
+
+  tokenizer_save_name: "tokenizer"
+  basemodel_save_name: "basemodel"
+
+experiment:
+  name: "kronos_krx_full"
+  description: "KRX 2,381 daily tickers, Kronos-base full fine-tune"
+  use_comet: false
+
+  train_tokenizer: true
+  train_basemodel: true
+
+  skip_existing: false
+
+device:
+  use_cuda: true
+  device_id: 0

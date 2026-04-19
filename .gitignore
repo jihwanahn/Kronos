@@ -74,3 +74,9 @@ venv.bak/
 temp/
 tmp/
 .python-version
+
+# KRX data cache & model checkpoints
+examples/krx_forecast/data/
+examples/krx_forecast/output/
+finetune_csv/finetuned/
+.claude/

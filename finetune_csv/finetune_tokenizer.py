@@ -14,6 +14,12 @@ import logging
 from logging.handlers import RotatingFileHandler
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
+from tqdm import tqdm
+try:
+    from torch.utils.tensorboard import SummaryWriter
+    _HAS_TB = True
+except ImportError:
+    _HAS_TB = False
 
 sys.path.append("../")
 from model import KronosTokenizer
@@ -177,19 +183,31 @@ def train_tokenizer(model, device, config, save_dir, logger):
 
     best_val_loss = float("inf")
     batch_idx_global = 0
-    
+
     accumulation_steps = getattr(config, 'accumulation_steps', 1)
-    
+
+    tb_writer = None
+    if _HAS_TB and rank == 0:
+        tb_dir = os.path.join(save_dir, "tb")
+        os.makedirs(tb_dir, exist_ok=True)
+        tb_writer = SummaryWriter(log_dir=tb_dir)
+        print(f"[tensorboard] logging to {tb_dir}")
+
     for epoch in range(config.tokenizer_epochs):
         epoch_start_time = time.time()
         model.train()
-        
+
         train_dataset.set_epoch_seed(epoch * 10000)
         val_dataset.set_epoch_seed(0)
         if train_sampler is not None:
             train_sampler.set_epoch(epoch)
-        
-        for batch_idx, (ori_batch_x, _) in enumerate(train_loader):
+
+        iterator = train_loader
+        if rank == 0:
+            iterator = tqdm(train_loader,
+                            desc=f"tok ep{epoch+1}/{config.tokenizer_epochs}",
+                            dynamic_ncols=True, leave=False)
+        for batch_idx, (ori_batch_x, _) in enumerate(iterator):
             ori_batch_x = ori_batch_x.to(device, non_blocking=True)
             
             current_batch_total_loss = 0.0
@@ -215,22 +233,29 @@ def train_tokenizer(model, device, config, save_dir, logger):
             scheduler.step()
             optimizer.zero_grad()
             
+            if rank == 0 and hasattr(iterator, "set_postfix"):
+                iterator.set_postfix(loss=f"{current_batch_total_loss / accumulation_steps:.4f}",
+                                     lr=f"{optimizer.param_groups[0]['lr']:.2e}")
+
+            if tb_writer is not None and (batch_idx_global + 1) % max(1, config.log_interval // 4) == 0:
+                tb_writer.add_scalar("train/loss", current_batch_total_loss / accumulation_steps, batch_idx_global)
+                tb_writer.add_scalar("train/vq_loss", bsq_loss.item(), batch_idx_global)
+                tb_writer.add_scalar("train/recon_pre", recon_loss_pre.item(), batch_idx_global)
+                tb_writer.add_scalar("train/recon_all", recon_loss_all.item(), batch_idx_global)
+                tb_writer.add_scalar("train/lr", optimizer.param_groups[0]["lr"], batch_idx_global)
+
             if (batch_idx_global + 1) % config.log_interval == 0:
                 avg_loss = current_batch_total_loss / accumulation_steps
                 lr = optimizer.param_groups[0]["lr"]
                 log_msg = (f"[Epoch {epoch+1}/{config.tokenizer_epochs}, Step {batch_idx+1}/{len(train_loader)}] "
                           f"LR: {lr:.6f}, Loss: {avg_loss:.4f}")
                 logger.info(log_msg)
-                if rank == 0:
-                    print(log_msg)
-                
+
                 detail_msg = (f"  - VQ Loss: {bsq_loss.item():.4f}\n"
                             f"  - Recon Loss Pre: {recon_loss_pre.item():.4f}\n"
                             f"  - Recon Loss All: {recon_loss_all.item():.4f}")
                 logger.info(detail_msg)
-                if rank == 0:
-                    print(detail_msg)
-            
+
             batch_idx_global += 1
         
         model.eval()
@@ -265,6 +290,10 @@ def train_tokenizer(model, device, config, save_dir, logger):
         if rank == 0:
             print(epoch_summary)
         
+        if tb_writer is not None:
+            tb_writer.add_scalar("val/loss", avg_val_loss, epoch + 1)
+            tb_writer.add_scalar("val/epoch_time_sec", epoch_time, epoch + 1)
+
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             if rank == 0:
@@ -274,7 +303,9 @@ def train_tokenizer(model, device, config, save_dir, logger):
                 save_msg = f"Best model saved to: {model_save_path} (validation loss: {best_val_loss:.4f})"
                 logger.info(save_msg)
                 print(save_msg)
-    
+
+    if tb_writer is not None:
+        tb_writer.close()
     return best_val_loss
 
 
