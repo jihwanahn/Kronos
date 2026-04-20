@@ -2,9 +2,9 @@
 
 data:
   # New key specific to KRX multi-ticker dataset — directory of per-ticker CSVs
-  data_dir: "D:/01_Career/Kronos/examples/krx_forecast/data"
+  data_dir: "../examples/krx_forecast/data"
   # Legacy key (unused by KRX pipeline, kept so CustomFinetuneConfig doesn't break)
-  data_path: "D:/01_Career/Kronos/examples/krx_forecast/data"
+  data_path: "../examples/krx_forecast/data"
   lookback_window: 512
   predict_window: 12        # shorter than default 48 → more windows per ticker
   max_context: 512
@@ -39,7 +39,7 @@ model_paths:
   pretrained_predictor: "NeoQuasar/Kronos-base"
 
   exp_name: "krx_base_full"
-  base_path: "D:/01_Career/Kronos/finetune_csv/finetuned"
+  base_path: "finetuned"
 
   base_save_path: ""        # auto: {base_path}/{exp_name}
   finetuned_tokenizer: ""   # auto: {base_path}/{exp_name}/tokenizer/best_model
